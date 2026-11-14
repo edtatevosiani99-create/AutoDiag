@@ -1,11 +1,20 @@
 package com.autodiag.app
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -17,25 +26,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
-private val Background = Color(0xFF0B1018)
-private val SurfaceDark = Color(0xFF141D29)
-private val Accent = Color(0xFF35C6A2)
-private val Muted = Color(0xFF91A0B4)
+private val Bg = Color(0xFF0A111B)
+private val Panel = Color(0xFF151F2D)
+private val Mint = Color(0xFF36D6B0)
+private val SecondaryText = Color(0xFF9AAABD)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Accent,
-                    background = Background,
-                    surface = SurfaceDark,
-                    onBackground = Color.White,
-                    onSurface = Color.White
-                )
-            ) {
+            MaterialTheme(colorScheme = darkColorScheme(primary = Mint, background = Bg, surface = Panel, onSurface = Color.White)) {
                 AutoDiagApp()
             }
         }
@@ -43,206 +47,284 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AutoDiagApp() {
-    var selectedTab by remember { mutableStateOf(0) }
-    var simulator by remember { mutableStateOf(true) }
-    var scanning by remember { mutableStateOf(false) }
+private fun AutoDiagApp() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val client = remember { Obd2Client() }
+    val simulator = remember { VehicleSimulator() }
+    var tab by remember { mutableIntStateOf(0) }
+    var simMode by remember { mutableStateOf(true) }
+    var devices by remember { mutableStateOf<List<BluetoothDevice>>(emptyList()) }
+    var connected by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("Готово к подключению") }
+    var data by remember { mutableStateOf(VehicleData(850, 90, 0, 3.5, 14.2)) }
+    var faults by remember { mutableStateOf<List<String>>(emptyList()) }
+    var faultMessage by remember { mutableStateOf("Ошибки ещё не считаны") }
+    var wifiHost by remember { mutableStateOf("192.168.0.10") }
+    var wifiPort by remember { mutableStateOf("35000") }
+    var showClearConfirm by remember { mutableStateOf(false) }
+
+    fun pairedDevices() {
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        @SuppressLint("MissingPermission")
+        val paired = manager.adapter?.bondedDevices?.toList().orEmpty()
+        devices = paired
+        status = if (paired.isEmpty()) "Нет сопряжённых устройств. Сначала добавьте OBD2 в настройках Bluetooth Android." else "Выберите сопряжённый OBD2 адаптер."
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) pairedDevices() else status = "Нет разрешения Bluetooth. Разрешите доступ в настройках Android."
+    }
+
+    LaunchedEffect(simMode, connected) {
+        if (simMode) {
+            while (simMode) {
+                data = simulator.next()
+            }
+        } else if (connected) {
+            while (!simMode && connected) {
+                try { data = client.readVehicleData() }
+                catch (e: Exception) { status = "Ошибка чтения: ${e.message ?: "нет ответа"}"; break }
+                delay(1500)
+            }
+        }
+    }
+
+    DisposableEffect(Unit) { onDispose { client.close() } }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("Удалить коды ошибок?") },
+            text = { Text("Команда OBD-II Mode 04 очистит сохранённые диагностические коды и может сбросить readiness-мониторы. Сначала сохраните результаты.") },
+            confirmButton = { TextButton(onClick = {
+                showClearConfirm = false
+                scope.launch {
+                    try { status = "Ответ ECU: ${client.clearTroubleCodes()}"; faults = emptyList(); faultMessage = "Коды очищены или команда принята ECU." }
+                    catch (e: Exception) { status = "Не удалось очистить: ${e.message}" }
+                }
+            }) { Text("Очистить") } },
+            dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Отмена") } }
+        )
+    }
 
     Scaffold(
-        containerColor = Background,
+        containerColor = Bg,
         bottomBar = {
-            NavigationBar(containerColor = SurfaceDark, contentColor = Color.White) {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Rounded.Dashboard, null) },
-                    label = { Text("Обзор") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Rounded.Bluetooth, null) },
-                    label = { Text("Подключение") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Rounded.Tune, null) },
-                    label = { Text("Данные") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 3,
-                    onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Rounded.Settings, null) },
-                    label = { Text("Ещё") }
-                )
+            NavigationBar(containerColor = Panel) {
+                val labels = listOf("Обзор", "Связь", "Данные", "Ошибки")
+                val icons = listOf(Icons.Rounded.Dashboard, Icons.Rounded.Bluetooth, Icons.Rounded.MonitorHeart, Icons.Rounded.Warning)
+                labels.forEachIndexed { index, label ->
+                    NavigationBarItem(selected = tab == index, onClick = { tab = index }, icon = { Icon(icons[index], null) }, label = { Text(label) })
+                }
             }
         }
     ) { padding ->
-        when (selectedTab) {
-            0 -> OverviewScreen(
-                padding = padding,
-                simulator = simulator,
-                onSimulatorChange = { simulator = it },
-                scanning = scanning,
-                onScan = { scanning = !scanning }
+        when (tab) {
+            0 -> Overview(padding, simMode, { simMode = it }, connected, status, data) { tab = 1 }
+            1 -> ConnectionScreen(
+                padding, context, devices, status, busy, connected, wifiHost, { wifiHost = it }, wifiPort, { wifiPort = it },
+                onPairList = {
+                    if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                        permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                    } else pairedDevices()
+                },
+                onConnect = { device ->
+                    scope.launch {
+                        busy = true
+                        status = "Подключение к ${device.name ?: device.address}…"
+                        try { status = client.connect(device); connected = true; simMode = false }
+                        catch (e: Exception) { status = "Ошибка Bluetooth: ${e.message ?: "не удалось подключиться"}"; connected = false; client.close() }
+                        busy = false
+                    }
+                },
+                onDisconnect = { client.close(); connected = false; status = "Адаптер отключён" },
+                onWifiConnect = {
+                    status = "Wi-Fi ELM327 пока доступен через следующий этап сетевого транспорта. Используйте Bluetooth Classic."
+                }
             )
-            1 -> ConnectionScreen(padding, simulator, onSimulatorChange = { simulator = it })
-            2 -> DataScreen(padding)
-            else -> MoreScreen(padding)
+            2 -> LiveDataScreen(padding, data, simMode)
+            else -> FaultScreen(padding, faults, faultMessage, status, simMode, connected,
+                onRead = {
+                    if (simMode) {
+                        faults = simulator.sampleFaults()
+                        faultMessage = "Демонстрационные коды симулятора — не реальные неисправности."
+                    } else scope.launch {
+                        busy = true
+                        try {
+                            faults = client.readTroubleCodes()
+                            faultMessage = if (faults.isEmpty()) "ECU не сообщил сохранённых кодов (или адаптер не поддерживает ответ)." else "Коды получены от ECU. Проверьте описание и freeze frame перед ремонтом."
+                        } catch (e: Exception) { faultMessage = "Ошибка чтения: ${e.message}" }
+                        busy = false
+                    }
+                },
+                onClear = { showClearConfirm = true },
+                busy = busy
+            )
         }
     }
 }
 
 @Composable
-private fun OverviewScreen(
-    padding: PaddingValues,
-    simulator: Boolean,
-    onSimulatorChange: (Boolean) -> Unit,
-    scanning: Boolean,
-    onScan: () -> Unit
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(top = 24.dp, bottom = 24.dp)
-    ) {
+private fun Overview(padding: PaddingValues, sim: Boolean, onSim: (Boolean) -> Unit, connected: Boolean, status: String, data: VehicleData, goConnect: () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(top = 22.dp, bottom = 24.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("AUTODIAG", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                    Text("Диагностика автомобиля", fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                Column(Modifier.weight(1f)) {
+                    Text("AUTODIAG", color = Mint, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, fontSize = 12.sp)
+                    Text("Автодиагностика", fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                    Text("OBD-II • диагностика двигателя", color = SecondaryText, fontSize = 12.sp)
                 }
-                Surface(shape = RoundedCornerShape(12.dp), color = SurfaceDark) {
-                    Icon(Icons.Rounded.DirectionsCar, null, tint = Accent, modifier = Modifier.padding(12.dp).size(28.dp))
-                }
+                Icon(Icons.Rounded.DirectionsCar, null, tint = Mint, modifier = Modifier.size(42.dp))
             }
         }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(if (simulator) "ВИРТУАЛЬНЫЙ АВТОМОБИЛЬ" else "РЕАЛЬНОЕ ПОДКЛЮЧЕНИЕ", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            Text(if (simulator) "Тестовый режим" else "OBD2 не подключён", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                            Text(if (sim) "ВИРТУАЛЬНЫЙ АВТОМОБИЛЬ" else "РЕАЛЬНЫЙ АДАПТЕР", color = SecondaryText, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Text(if (sim) "Режим симулятора" else if (connected) "OBD2 подключён" else "Нет подключения", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
-                        Icon(Icons.Rounded.Cable, null, tint = Accent, modifier = Modifier.size(30.dp))
+                        Switch(checked = sim, onCheckedChange = onSim)
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Симулятор", modifier = Modifier.weight(1f), color = Muted)
-                        Switch(checked = simulator, onCheckedChange = onSimulatorChange)
+                    Text(status, color = SecondaryText, fontSize = 12.sp)
+                    OutlinedButton(onClick = goConnect, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Bluetooth, null); Spacer(Modifier.width(8.dp)); Text("Подключить адаптер") }
+                }
+            }
+        }
+        item { Text("ПАРАМЕТРЫ ДВИГАТЕЛЯ", color = SecondaryText, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 1.sp) }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Metric("Обороты", data.rpm?.toString() ?: "—", "об/мин", Modifier.weight(1f))
+            Metric("Температура", data.coolantC?.toString() ?: "—", "°C", Modifier.weight(1f))
+        } }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Metric("Скорость", data.speedKmh?.toString() ?: "—", "км/ч", Modifier.weight(1f))
+            Metric("Напряжение", data.voltage?.let { "%.1f".format(it) } ?: "—", "В", Modifier.weight(1f))
+        } }
+        item { Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+            Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Возможности", fontWeight = FontWeight.Bold)
+                FeatureLine("OBD-II двигатель", "Стандартные PID и DTC")
+                FeatureLine("ABS / Airbag / ESP", "Только если поддерживается автомобилем, адаптером и протоколом")
+                FeatureLine("Сервисные функции", "Добавляются по маркам и подтверждённой совместимости")
+            }
+        } }
+        item { Text("Симулятор показывает тестовые данные. Реальные параметры доступны только при подключённом совместимом адаптере и включённом зажигании.", color = SecondaryText, fontSize = 11.sp) }
+    }
+}
+
+@Composable
+private fun Metric(title: String, value: String, unit: String, modifier: Modifier = Modifier) {
+    Card(modifier, colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(16.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, color = SecondaryText, fontSize = 12.sp)
+            Text(value, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+            Text(unit, color = Mint, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun FeatureLine(title: String, detail: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Text(detail, color = SecondaryText, fontSize = 11.sp)
+    }
+}
+
+@SuppressLint("MissingPermission")
+@Composable
+private fun ConnectionScreen(
+    padding: PaddingValues, context: Context, devices: List<BluetoothDevice>, status: String, busy: Boolean, connected: Boolean,
+    wifiHost: String, onHost: (String) -> Unit, wifiPort: String, onPort: (String) -> Unit,
+    onPairList: () -> Unit, onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit, onWifiConnect: () -> Unit
+) {
+    LazyColumn(Modifier.fillMaxSize().padding(padding).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item { Text("Подключение OBD2", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Bluetooth Classic", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Сопрягите ELM327 в настройках Android, затем выберите его здесь. Часто адаптеры используют PIN 1234 или 0000.", color = SecondaryText, fontSize = 12.sp)
+                    Button(onClick = onPairList, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Показать сопряжённые устройства") }
+                    if (devices.isEmpty()) Text("Список пока пуст.", color = SecondaryText, fontSize = 12.sp)
+                }
+            }
+        }
+        items(devices) { device ->
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Bluetooth, null, tint = Mint)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(device.name ?: "OBD2 device", fontWeight = FontWeight.SemiBold)
+                        Text(device.address, color = SecondaryText, fontSize = 11.sp)
                     }
-                    Button(
-                        onClick = onScan,
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color(0xFF06130F)),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Icon(Icons.Rounded.Radar, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (scanning) "Остановить сканирование" else "Начать диагностику", fontWeight = FontWeight.Bold)
-                    }
-                    if (scanning) Text("Демонстрационное сканирование запущено. Данные пока тестовые.", color = Accent, fontSize = 12.sp)
+                    TextButton(onClick = { onConnect(device) }, enabled = !busy && !connected) { Text("Подключить") }
                 }
             }
         }
         item {
-            Text("МОНИТОРИНГ ДВИГАТЕЛЯ", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricCard("Обороты", "850", "об/мин", Modifier.weight(1f))
-                MetricCard("Температура", "90", "°C", Modifier.weight(1f))
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricCard("Напряжение", "14.2", "В", Modifier.weight(1f))
-                MetricCard("Скорость", "0", "км/ч", Modifier.weight(1f))
-            }
-        }
-        item {
-            Text("СИСТЕМЫ АВТОМОБИЛЯ", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
-        }
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                SystemRow("Двигатель / ECU", "OBD-II", Icons.Rounded.Memory)
-                SystemRow("ABS / ESP", "Ожидает совместимого адаптера", Icons.Rounded.Security)
-                SystemRow("Airbag / SRS", "Ожидает совместимого адаптера", Icons.Rounded.Air)
-                SystemRow("Трансмиссия", "Ожидает совместимого адаптера", Icons.Rounded.Settings)
-            }
-        }
-        item {
-            Text("Важно: показания сейчас демонстрационные. Реальные данные появятся после подключения совместимого OBD2-адаптера.", color = Muted, fontSize = 11.sp)
-        }
-    }
-}
-
-@Composable
-private fun MetricCard(title: String, value: String, unit: String, modifier: Modifier = Modifier) {
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(title, color = Muted, fontSize = 12.sp)
-            Text(value, fontSize = 25.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Text(unit, color = Accent, fontSize = 11.sp)
-        }
-    }
-}
-
-@Composable
-private fun SystemRow(name: String, status: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = Accent, modifier = Modifier.size(24.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                Text(status, color = Muted, fontSize = 11.sp)
-            }
-            Icon(Icons.Rounded.ChevronRight, null, tint = Muted)
-        }
-    }
-}
-
-@Composable
-private fun ConnectionScreen(padding: PaddingValues, simulator: Boolean, onSimulatorChange: (Boolean) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(padding).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Подключение", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-        Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Rounded.BluetoothSearching, tint = Accent, contentDescription = null, modifier = Modifier.size(34.dp))
-                Text("OBD2 адаптер", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                Text("Подключение Bluetooth и Wi-Fi будет реализовано следующим этапом.", color = Muted)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Режим симулятора", modifier = Modifier.weight(1f))
-                    Switch(checked = simulator, onCheckedChange = onSimulatorChange)
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("Wi-Fi адаптер", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    OutlinedTextField(value = wifiHost, onValueChange = onHost, label = { Text("IP-адрес адаптера") }, singleLine = true)
+                    OutlinedTextField(value = wifiPort, onValueChange = onPort, label = { Text("TCP-порт") }, singleLine = true)
+                    Text("Сетевой транспорт будет подключён следующим этапом. Сейчас доступен Bluetooth Classic SPP.", color = SecondaryText, fontSize = 11.sp)
+                    OutlinedButton(onClick = onWifiConnect, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("Wi-Fi — скоро") }
                 }
             }
         }
-        Text("Поддержка адаптеров будет зависеть от модели устройства и используемого протокола.", color = Muted, fontSize = 12.sp)
+        item {
+            if (connected) Button(onClick = onDisconnect, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF9B3946))) { Text("Отключить адаптер") }
+            Text(status, color = SecondaryText, fontSize = 12.sp)
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
     }
 }
 
 @Composable
-private fun DataScreen(padding: PaddingValues) {
-    Column(Modifier.fillMaxSize().padding(padding).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Live Data", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-        Text("Демонстрационные параметры двигателя", color = Muted)
-        MetricCard("Обороты двигателя", "850", "об/мин")
-        MetricCard("Температура охлаждающей жидкости", "90", "°C")
-        MetricCard("Напряжение бортовой сети", "14.2", "В")
-        MetricCard("Положение дросселя", "3.5", "%")
+private fun LiveDataScreen(padding: PaddingValues, data: VehicleData, sim: Boolean) {
+    LazyColumn(Modifier.fillMaxSize().padding(padding).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item { Text("Live Data", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+        item { Text(if (sim) "Виртуальные данные • обновляются автоматически" else "Данные от подключённого ECU", color = SecondaryText, fontSize = 12.sp) }
+        item { Metric("Обороты двигателя", data.rpm?.toString() ?: "—", "об/мин") }
+        item { Metric("Температура охлаждающей жидкости", data.coolantC?.toString() ?: "—", "°C") }
+        item { Metric("Скорость автомобиля", data.speedKmh?.toString() ?: "—", "км/ч") }
+        item { Metric("Положение дросселя", data.throttlePercent?.let { "%.1f".format(it) } ?: "—", "%") }
+        item { Metric("Напряжение ECU", data.voltage?.let { "%.2f".format(it) } ?: "—", "В") }
+        item { Text("Некоторые PID могут не поддерживаться конкретным автомобилем или дешёвым адаптером. Отсутствующее значение отображается как «—».", color = SecondaryText, fontSize = 11.sp) }
     }
 }
 
 @Composable
-private fun MoreScreen(padding: PaddingValues) {
-    Column(Modifier.fillMaxSize().padding(padding).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Дополнительно", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-        SystemRow("Коды неисправностей", "Чтение и расшифровка DTC", Icons.Rounded.Warning)
-        SystemRow("Сервисные функции", "Для поддерживаемых автомобилей", Icons.Rounded.Build)
-        SystemRow("Выбор автомобиля", "Марка, модель и год", Icons.Rounded.DirectionsCar)
-        SystemRow("Настройки", "Язык и параметры приложения", Icons.Rounded.Settings)
-        Text("AutoDiag 0.1.0 • Android", color = Muted, fontSize = 12.sp)
+private fun FaultScreen(padding: PaddingValues, faults: List<String>, message: String, status: String, sim: Boolean, connected: Boolean, onRead: () -> Unit, onClear: () -> Unit, busy: Boolean) {
+    LazyColumn(Modifier.fillMaxSize().padding(padding).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item { Text("Коды неисправностей", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+        item { Text(if (sim) "Демо-сценарий" else if (connected) "OBD-II • ECU" else "Нет подключения", color = SecondaryText, fontSize = 12.sp) }
+        item {
+            Button(onClick = onRead, enabled = !busy && (sim || connected), modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Search, null); Spacer(Modifier.width(8.dp)); Text("Считать ошибки")
+            }
+        }
+        items(faults) { code ->
+            Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(code, color = Mint, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(DtcDecoder.description(code), fontSize = 13.sp)
+                    Text(if (sim) "Сгенерировано симулятором" else "Код считан из ответа ECU; необходима диагностика причины.", color = SecondaryText, fontSize = 11.sp)
+                }
+            }
+        }
+        item { Text(message, color = SecondaryText, fontSize = 12.sp) }
+        item {
+            OutlinedButton(onClick = onClear, enabled = !sim && connected && !busy, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.DeleteSweep, null); Spacer(Modifier.width(8.dp)); Text("Очистить коды ECU")
+            }
+        }
+        item { Text("Очистка кодов не устраняет неисправность. Не стирайте ошибки до сохранения кодов и freeze-frame данных.", color = Color(0xFFFFC46B), fontSize = 11.sp) }
+        item { Text(status, color = SecondaryText, fontSize = 11.sp) }
     }
 }
