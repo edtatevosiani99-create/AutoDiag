@@ -152,15 +152,19 @@ private fun AutoDiagApp() {
             )
             2 -> LiveDataScreen(padding, data, simMode)
             else -> FaultScreen(padding, faults, faultMessage, status, simMode, connected,
-                onRead = {
+                onRead = { mode ->
                     if (simMode) {
                         faults = simulator.sampleFaults()
                         faultMessage = "Демонстрационные коды симулятора — не реальные неисправности."
                     } else scope.launch {
                         busy = true
                         try {
-                            faults = client.readTroubleCodes()
-                            faultMessage = if (faults.isEmpty()) "ECU не сообщил сохранённых кодов (или адаптер не поддерживает ответ)." else "Коды получены от ECU. Проверьте описание и freeze frame перед ремонтом."
+                            faults = when (mode) {
+                                7 -> client.readPendingTroubleCodes()
+                                10 -> client.readPermanentTroubleCodes()
+                                else -> client.readTroubleCodes()
+                            }
+                            faultMessage = if (faults.isEmpty()) "ECU не сообщил коды этого типа (или адаптер не поддерживает ответ)." else "Коды получены от ECU. Сохраните их и проверьте причину до очистки."
                         } catch (e: Exception) { faultMessage = "Ошибка чтения: ${e.message}" }
                         busy = false
                     }
@@ -306,13 +310,17 @@ private fun LiveDataScreen(padding: PaddingValues, data: VehicleData, sim: Boole
 }
 
 @Composable
-private fun FaultScreen(padding: PaddingValues, faults: List<String>, message: String, status: String, sim: Boolean, connected: Boolean, onRead: () -> Unit, onClear: () -> Unit, busy: Boolean) {
+private fun FaultScreen(padding: PaddingValues, faults: List<String>, message: String, status: String, sim: Boolean, connected: Boolean, onRead: (Int) -> Unit, onClear: () -> Unit, busy: Boolean) {
     LazyColumn(Modifier.fillMaxSize().padding(padding).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Text("Коды неисправностей", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
         item { Text(if (sim) "Демо-сценарий" else if (connected) "OBD-II • ECU" else "Нет подключения", color = SecondaryText, fontSize = 12.sp) }
         item {
-            Button(onClick = onRead, enabled = !busy && (sim || connected), modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Rounded.Search, null); Spacer(Modifier.width(8.dp)); Text("Считать ошибки")
+            Button(onClick = { onRead(3) }, enabled = !busy && (sim || connected), modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Search, null); Spacer(Modifier.width(8.dp)); Text("Считать сохранённые (Mode 03)")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onRead(7) }, enabled = !busy && (sim || connected), modifier = Modifier.weight(1f)) { Text("Ожидающие 07") }
+                OutlinedButton(onClick = { onRead(10) }, enabled = !busy && (sim || connected), modifier = Modifier.weight(1f)) { Text("Постоянные 0A") }
             }
         }
         items(faults) { code ->
