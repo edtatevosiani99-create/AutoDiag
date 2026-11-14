@@ -279,7 +279,7 @@ private fun ConnectionScreen(
                     OutlinedTextField(value = wifiHost, onValueChange = onHost, label = { Text("IP-адрес адаптера") }, singleLine = true)
                     OutlinedTextField(value = wifiPort, onValueChange = onPort, label = { Text("TCP-порт") }, singleLine = true)
                     Text("Для многих Wi-Fi ELM327 используются адрес 192.168.0.10 и порт 35000. Значения зависят от адаптера.", color = SecondaryText, fontSize = 11.sp)
-                    OutlinedButton(onClick = { onWifiConnect(wifiHost.trim(), wifiPort.toIntOrNull() ?: 35000) }, enabled = !busy && wifiHost.isNotBlank() && wifiPort.toIntOrNull() in 1..65535 && !connected, modifier = Modifier.fillMaxWidth()) { Text("Подключить по Wi-Fi") }
+                    OutlinedButton(onClick = { onWifiConnect(wifiHost.trim(), wifiPort.toIntOrNull() ?: 35000) }, enabled = !busy && wifiHost.isNotBlank() && wifiPort.toIntOrNull()?.let { it in 1..65535 } == true && !connected, modifier = Modifier.fillMaxWidth()) { Text("Подключить по Wi-Fi") }
                 }
             }
         }
