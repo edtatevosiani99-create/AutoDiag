@@ -19,9 +19,13 @@ object DtcDecoder {
     fun description(code: String): String = descriptions[code]
         ?: "Описание отсутствует в локальной базе. Требуется проверка по документации автомобиля."
 
-    fun decodeMode03(raw: String): List<String> {
+    fun decodeMode03(raw: String): List<String> = decodeService(raw, "43")
+    fun decodeMode07(raw: String): List<String> = decodeService(raw, "47")
+    fun decodeMode0A(raw: String): List<String> = decodeService(raw, "4A")
+
+    private fun decodeService(raw: String, service: String): List<String> {
         val hex = raw.uppercase().replace(Regex("[^0-9A-F]"), "")
-        val start = hex.indexOf("43")
+        val start = hex.indexOf(service)
         if (start < 0) return emptyList()
         val payload = hex.substring(start + 2)
         val codes = mutableListOf<String>()
