@@ -152,7 +152,7 @@ private fun OverviewScreen(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MetricCard("Обороты", "850", "об/мин", Modifier.weight(1f))
-                MetricCard("Температура", " อ90", "°C", Modifier.weight(1f))
+                MetricCard("Температура", "90", "°C", Modifier.weight(1f))
             }
         }
         item {
