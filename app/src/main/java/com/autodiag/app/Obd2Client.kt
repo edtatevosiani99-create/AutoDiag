@@ -68,9 +68,9 @@ class Obd2Client {
         VehicleData(rpm, coolant, speed, throttle, voltage)
     }
 
-    suspend fun readTroubleCodes(): List<String> = withContext(Dispatchers.IO) {
-        DtcDecoder.decodeMode03(send("03"))
-    }
+    suspend fun readTroubleCodes(): List<String> = withContext(Dispatchers.IO) { DtcDecoder.decodeMode03(send("03")) }
+    suspend fun readPendingTroubleCodes(): List<String> = withContext(Dispatchers.IO) { DtcDecoder.decodeMode07(send("07")) }
+    suspend fun readPermanentTroubleCodes(): List<String> = withContext(Dispatchers.IO) { DtcDecoder.decodeMode0A(send("0A")) }
     suspend fun clearTroubleCodes(): String = command("04")
 
     private fun parsePid(response: String, header: String): List<Int>? {
