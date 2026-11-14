@@ -140,8 +140,14 @@ private fun AutoDiagApp() {
                     }
                 },
                 onDisconnect = { client.close(); connected = false; status = "Адаптер отключён" },
-                onWifiConnect = {
-                    status = "Wi-Fi ELM327 пока доступен через следующий этап сетевого транспорта. Используйте Bluetooth Classic."
+                onWifiConnect = { host, port ->
+                    scope.launch {
+                        busy = true
+                        status = "Подключение к Wi-Fi адаптеру…"
+                        try { status = client.connectWifi(host, port); connected = true; simMode = false }
+                        catch (e: Exception) { status = "Ошибка Wi-Fi: ${e.message ?: "нет соединения"}"; connected = false; client.close() }
+                        busy = false
+                    }
                 }
             )
             2 -> LiveDataScreen(padding, data, simMode)
@@ -239,7 +245,7 @@ private fun FeatureLine(title: String, detail: String) {
 private fun ConnectionScreen(
     padding: PaddingValues, context: Context, devices: List<BluetoothDevice>, status: String, busy: Boolean, connected: Boolean,
     wifiHost: String, onHost: (String) -> Unit, wifiPort: String, onPort: (String) -> Unit,
-    onPairList: () -> Unit, onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit, onWifiConnect: () -> Unit
+    onPairList: () -> Unit, onConnect: (BluetoothDevice) -> Unit, onDisconnect: () -> Unit, onWifiConnect: (String, Int) -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(padding).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Text("Подключение OBD2", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
@@ -272,8 +278,8 @@ private fun ConnectionScreen(
                     Text("Wi-Fi адаптер", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                     OutlinedTextField(value = wifiHost, onValueChange = onHost, label = { Text("IP-адрес адаптера") }, singleLine = true)
                     OutlinedTextField(value = wifiPort, onValueChange = onPort, label = { Text("TCP-порт") }, singleLine = true)
-                    Text("Сетевой транспорт будет подключён следующим этапом. Сейчас доступен Bluetooth Classic SPP.", color = SecondaryText, fontSize = 11.sp)
-                    OutlinedButton(onClick = onWifiConnect, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("Wi-Fi — скоро") }
+                    Text("Для многих Wi-Fi ELM327 используются адрес 192.168.0.10 и порт 35000. Значения зависят от адаптера.", color = SecondaryText, fontSize = 11.sp)
+                    OutlinedButton(onClick = { onWifiConnect(wifiHost.trim(), wifiPort.toIntOrNull() ?: 35000) }, enabled = !busy && wifiHost.isNotBlank() && wifiPort.toIntOrNull() in 1..65535 && !connected, modifier = Modifier.fillMaxWidth()) { Text("Подключить по Wi-Fi") }
                 }
             }
         }
