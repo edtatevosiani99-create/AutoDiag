@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import java.net.Socket
 
 data class VehicleData(
     val rpm: Int? = null,
@@ -24,6 +25,7 @@ class Obd2Client {
     private var socket: BluetoothSocket? = null
     private var input: InputStream? = null
     private var output: OutputStream? = null
+    private var wifiSocket: Socket? = null
     val isConnected: Boolean get() = socket?.isConnected == true
 
     @SuppressLint("MissingPermission")
@@ -38,6 +40,21 @@ class Obd2Client {
         send("ATE0"); send("ATL0"); send("ATS0"); send("ATH0"); send("ATSP0")
         val protocol = send("ATDP")
         "ELM327 ready. " + adapter.trim().ifBlank { "Adapter initialized" } + " " + protocol.trim()
+    }
+
+    suspend fun connectWifi(host: String, port: Int): String = withContext(Dispatchers.IO) {
+        require(port in 1..65535) { "Invalid TCP port" }
+        close()
+        val s = Socket()
+        s.connect(java.net.InetSocketAddress(host, port), 5000)
+        s.soTimeout = 4000
+        wifiSocket = s
+        input = s.getInputStream()
+        output = s.getOutputStream()
+        val adapter = send("ATZ", 5000)
+        send("ATE0"); send("ATL0"); send("ATS0"); send("ATH0"); send("ATSP0")
+        val protocol = send("ATDP")
+        "Wi-Fi ELM327 ready. " + adapter.trim().ifBlank { "Adapter initialized" } + " " + protocol.trim()
     }
 
     suspend fun command(command: String): String = withContext(Dispatchers.IO) { send(command) }
@@ -91,6 +108,7 @@ class Obd2Client {
         try { input?.close() } catch (_: Exception) {}
         try { output?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
-        input = null; output = null; socket = null
+        try { wifiSocket?.close() } catch (_: Exception) {}
+        input = null; output = null; socket = null; wifiSocket = null
     }
 }
