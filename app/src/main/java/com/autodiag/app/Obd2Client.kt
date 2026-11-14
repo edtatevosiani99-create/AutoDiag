@@ -104,7 +104,7 @@ class Obd2Client {
                 }
             } else Thread.sleep(30)
         }
-        result.toString().replace(">", "").trim()
+        return result.toString().replace(">", "").trim()
     }
 
     fun close() {
