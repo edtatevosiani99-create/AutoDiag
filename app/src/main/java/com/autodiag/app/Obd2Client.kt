@@ -31,8 +31,11 @@ class Obd2Client {
     @SuppressLint("MissingPermission")
     suspend fun connect(device: BluetoothDevice): String = withContext(Dispatchers.IO) {
         close()
-        val s = device.createRfcommSocketToServiceRecord(SPP_UUID)
-        s.connect()
+        val s = try {
+            device.createRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() }
+        } catch (secureError: Exception) {
+            device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() }
+        }
         socket = s
         input = s.inputStream
         output = s.outputStream
