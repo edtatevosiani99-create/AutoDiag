@@ -26,7 +26,7 @@ class Obd2Client {
     private var input: InputStream? = null
     private var output: OutputStream? = null
     private var wifiSocket: Socket? = null
-    val isConnected: Boolean get() = socket?.isConnected == true
+    val isConnected: Boolean get() = socket?.isConnected == true || wifiSocket?.isConnected == true
 
     @SuppressLint("MissingPermission")
     suspend fun connect(device: BluetoothDevice): String = withContext(Dispatchers.IO) {
@@ -63,7 +63,7 @@ class Obd2Client {
     suspend fun command(command: String): String = withContext(Dispatchers.IO) { send(command) }
 
     suspend fun readVehicleData(): VehicleData = withContext(Dispatchers.IO) {
-        val rpm = parsePid(send("010C"), "410C")?.let { ((it[0] * 256) + it[1]) / 4 }
+        val rpm = parsePid(send("010C"), "410C")?.takeIf { it.size >= 2 }?.let { ((it[0] * 256) + it[1]) / 4 }
         val coolant = parsePid(send("0105"), "4105")?.firstOrNull()?.minus(40)
         val speed = parsePid(send("010D"), "410D")?.firstOrNull()
         val throttle = parsePid(send("0111"), "4111")?.firstOrNull()?.let { it * 100.0 / 255.0 }
